@@ -3,11 +3,14 @@ import datetime
 import sys
 import pytest
 import time
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
-from test_common import create_config, DummyResource, send_message_override
 sys.path.append('plugins/sdm')
-from lib import ApproveHelper, GrantHelper, PollerHelper
+sys.path.append('e2e/')
+
+from test_common import create_config, DummyResource, send_message_override, callback_message_fn
+from lib import ApproveHelper, ResourceGrantHelper, PollerHelper
+from lib.exceptions import NotFoundException
 
 pytest_plugins = ["errbot.backends.test"]
 extra_plugin_dir = 'plugins/sdm'
@@ -17,8 +20,10 @@ resource_name = "myresource"
 account_id = 1
 account_name = "myaccount@test.com"
 access_request_id = "12ab"
+alternative_email_tag = "sdm_email"
+alternative_email = "myemail001@email.com"
 
-class Test_default_flow: # manual approval
+class Test_default_flow:  # manual approval
     @pytest.fixture
     def mocked_testbot(self, testbot):
         config = create_config()
@@ -149,6 +154,30 @@ class Test_auto_approve_tag:
         push_access_request(mocked_testbot)
         assert "Granting" in mocked_testbot.pop_message()
 
+class Test_allow_resource_tag:
+    @pytest.fixture
+    def mocked_testbot_allow_true(self, testbot):
+        config = create_config()
+        config['ALLOW_RESOURCE_TAG'] = "allow-resource"
+        return inject_config(testbot, config, tags = {'allow-resource': True})
+
+    @pytest.fixture
+    def mocked_testbot_allow_false(self, testbot):
+        config = create_config()
+        config['ALLOW_RESOURCE_TAG'] = "allow-resource"
+        return inject_config(testbot, config, tags = {'allow-resource': False})
+
+    def test_access_command_fail_for_not_allowed_resources(self, mocked_testbot_allow_false):
+        push_access_request(mocked_testbot_allow_false)
+        assert "not available" in mocked_testbot_allow_false.pop_message()
+
+    def test_access_command_grant_when_allowed_resource(self, mocked_testbot_allow_true):
+        push_access_request(mocked_testbot_allow_true)
+        mocked_testbot_allow_true.push_message(f"yes {access_request_id}")
+        assert "valid request" in mocked_testbot_allow_true.pop_message()
+        assert "access request" in mocked_testbot_allow_true.pop_message()
+        assert "Granting" in mocked_testbot_allow_true.pop_message()
+
 class Test_hide_resource_tag:
     @pytest.fixture
     def mocked_testbot_hide_true(self, testbot):
@@ -218,15 +247,23 @@ class Test_resources_by_role:
         mocked_testbot.push_message("access to Yyy")
         assert "not available" in mocked_testbot.pop_message()
 
-class Test_grant_exists:
+class Test_acount_grant_exists:
     @pytest.fixture
     def mocked_testbot(self, testbot):
         config = create_config()
-        return inject_config(testbot, config, grant_exists = True)
+        return inject_config(testbot, config, account_grant_exists = True)
 
-    def test_access_command_grant_for_valid_resource(self, mocked_testbot):
+    def test_when_grant_exists(self, mocked_testbot):
         push_access_request(mocked_testbot)
         assert "already have access" in mocked_testbot.pop_message()
+
+    def test_when_grant_doesnt_exists(self, mocked_testbot):
+        accessbot = mocked_testbot.bot.plugin_manager.plugins['AccessBot']
+        service = accessbot.get_sdm_service()
+        service.account_grant_exists.return_value = False
+        push_access_request(mocked_testbot)
+        assert "valid request" in mocked_testbot.pop_message()
+        assert "access request" in mocked_testbot.pop_message()
 
 class Test_admin_in_channel:
     channel_name = 'testroom'
@@ -277,27 +314,133 @@ class Test_fuzzy_matching:
         time.sleep(0.2)
         assert "cannot find that resource" in mocked_testbot.pop_message()
 
+    def test_find_with_disabled_fuzzy_matching(self, mocked_testbot):
+        accessbot = mocked_testbot.bot.plugin_manager.plugins['AccessBot']
+        accessbot.config['ENABLE_RESOURCES_FUZZY_MATCHING'] = False
+        mocked_testbot.push_message("access to Long name")
+        time.sleep(0.2)
+        assert "cannot find that resource" in mocked_testbot.pop_message()
+
+# pylint: disable=protected-access
+class Test_self_approve:
+    channel_name = 'testroom'
+
+    @pytest.fixture
+    def mocked_testbot(self, testbot):
+        config = create_config()
+        config['ADMINS_CHANNEL'] = f"#{self.channel_name}"
+        config['ADMIN_TIMEOUT'] = 30
+        testbot.bot.sender.room = create_room_mock(self.channel_name)
+        testbot.bot.sender._nick = config['SENDER_NICK_OVERRIDE']
+        testbot.bot.sender._email = config['SENDER_EMAIL_OVERRIDE']
+        return inject_config(testbot, config, admins = [f'@not-admin'])
+
+    def test_when_approver_is_not_the_requester(self, mocked_testbot):
+        push_access_request(mocked_testbot)
+        mocked_testbot.push_message(f"yes {access_request_id}")
+        assert "valid request" in mocked_testbot.pop_message()
+        assert "access request" in mocked_testbot.pop_message()
+        assert "Granting" in mocked_testbot.pop_message()
+
+    def test_when_approver_is_requester(self, mocked_testbot):
+        mocked_testbot.bot.sender._email = account_name
+        mocked_testbot.bot.sender._nick = account_name
+        push_access_request(mocked_testbot)
+        mocked_testbot.push_message(f"yes {access_request_id}")
+        assert "valid request" in mocked_testbot.pop_message()
+        assert "access request" in mocked_testbot.pop_message()
+        assert "Invalid" in mocked_testbot.pop_message()
+
+class Test_alternative_email:
+    @pytest.fixture
+    def mocked_testbot(self, testbot):
+        config = create_config()
+        config['EMAIL_SLACK_FIELD'] = alternative_email_tag
+        config['SENDER_EMAIL_OVERRIDE'] = None
+        testbot.bot.sender.userid = 'XXX'
+        return inject_config(testbot, config, alternate_email = True)
+
+    def test_alternative_email(self, mocked_testbot):
+        push_access_request(mocked_testbot)
+        mocked_testbot.push_message(f"yes {access_request_id}")
+        assert "valid request" in mocked_testbot.pop_message()
+        assert "access request" in mocked_testbot.pop_message()
+        granting_message = mocked_testbot.pop_message()
+        assert "Granting" in granting_message
+        assert alternative_email in granting_message
+
+class Test_override_email:
+    override_email = 'override@email.com'
+
+    @pytest.fixture
+    def mocked_testbot(self, testbot):
+        config = create_config()
+        config['SENDER_EMAIL_OVERRIDE'] = self.override_email
+        return inject_config(testbot, config)
+
+    def test_override_email(self, mocked_testbot):
+        push_access_request(mocked_testbot)
+        mocked_testbot.push_message(f"yes {access_request_id}")
+        assert "valid request" in mocked_testbot.pop_message()
+        assert "access request" in mocked_testbot.pop_message()
+        granting_message = mocked_testbot.pop_message()
+        assert "Granting" in granting_message
+        assert self.override_email in granting_message
+
+class Test_custom_resource_grant_timeout:
+    timeout = 1
+
+    @pytest.fixture
+    def mocked_testbot(self, testbot):
+        config = create_config()
+        timeout_grant_tag = 'grant-timeout'
+        config['RESOURCE_GRANT_TIMEOUT_TAG'] = timeout_grant_tag
+        return inject_config(testbot, config, tags={timeout_grant_tag: f'{self.timeout}'})
+
+    def test_access_command_grant_auto_approved_for_tagged_resource(self, mocked_testbot):
+        push_access_request(mocked_testbot)
+        mocked_testbot.push_message(f'yes {access_request_id}')
+        assert "valid request" in mocked_testbot.pop_message()
+        assert "access request" in mocked_testbot.pop_message()
+        granting_message = mocked_testbot.pop_message()
+        assert "Granting" in granting_message
+        assert f"{self.timeout} minutes" in granting_message
+
+class Test_change_error_message:
+    @pytest.fixture
+    def mocked_testbot(self, testbot):
+        return inject_config(testbot, create_config())
+
+    def test_error_message(self, mocked_testbot):
+        accessbot = mocked_testbot.bot.plugin_manager.plugins['AccessBot']
+        accessbot.get_sdm_service().get_account_by_email = MagicMock(side_effect = Exception('Something failed'))
+
+        push_access_request(mocked_testbot)
+        assert "An error occurred" in mocked_testbot.pop_message()
+
+
 # pylint: disable=dangerous-default-value
-def inject_config(testbot, config, admins = ["gbin@localhost"], tags = {}, resources_by_role = [], grant_exists = False, resources = []):
+def inject_config(testbot, config, admins=["gbin@localhost"], tags={}, resources_by_role=[], account_grant_exists=False, resources=[], alternate_email = False):
     accessbot = testbot.bot.plugin_manager.plugins['AccessBot']
     accessbot.config = config
     accessbot.get_admins = MagicMock(return_value = admins)
     accessbot.get_api_access_key = MagicMock(return_value = "api-access_key")
-    accessbot.get_api_secret_key = MagicMock(return_value = "c2VjcmV0LWtleQ==") # valid base64 string
-    accessbot.get_sdm_service = MagicMock(return_value = create_sdm_service_mock(tags, resources_by_role, grant_exists, resources))
-    accessbot.get_grant_helper = MagicMock(return_value = create_grant_helper(accessbot))
+    accessbot.get_api_secret_key = MagicMock(return_value = "c2VjcmV0LWtleQ==")  # valid base64 string
+    accessbot.get_sdm_service = MagicMock(return_value = create_sdm_service_mock(tags, resources_by_role, account_grant_exists, resources))
+    accessbot.get_resource_grant_helper = MagicMock(return_value = create_resource_grant_helper(accessbot))
     accessbot.get_approve_helper = MagicMock(return_value = create_approve_helper(accessbot))
+    accessbot._bot.find_user_profile = MagicMock(side_effect=get_alternative_email_func(alternate_email))
     return testbot
 
-def create_grant_helper(accessbot):
-    helper = GrantHelper(accessbot)
+def create_resource_grant_helper(accessbot):
+    helper = ResourceGrantHelper(accessbot)
     helper.generate_grant_request_id = MagicMock(return_value = access_request_id)
     return helper
 
 def create_approve_helper(accessbot):
     return ApproveHelper(accessbot)
 
-def create_sdm_service_mock(tags, resources_by_role, grant_exists, resources):
+def create_sdm_service_mock(tags, resources_by_role, account_grant_exists, resources):
     mock = MagicMock()
     if len(resources) > 0:
         mock.get_resource_by_name = MagicMock(side_effect = raise_no_resource_found)
@@ -306,7 +449,7 @@ def create_sdm_service_mock(tags, resources_by_role, grant_exists, resources):
     mock.get_account_by_email = MagicMock(return_value = create_account_mock())
     mock.grant_temporary_access = MagicMock()
     mock.get_all_resources_by_role = MagicMock(return_value = resources_by_role)
-    mock.grant_exists = MagicMock(return_value = grant_exists)
+    mock.account_grant_exists = MagicMock(return_value = account_grant_exists)
     mock.get_all_resources = MagicMock(return_value = resources)
     return mock
 
@@ -317,10 +460,17 @@ def create_resource_mock(tags):
     mock.tags = tags
     return mock
 
-def create_account_mock():
+def create_account_mock(account_email = account_name):
     mock = MagicMock()
     mock.id = account_id
     mock.name = account_name
+    mock.email = account_email
+    return mock
+
+def create_approver_mock(account_email = account_name):
+    mock = MagicMock()
+    mock.email = account_email
+    mock.nick = account_email
     return mock
 
 def create_room_mock(channel_name):
@@ -332,7 +482,22 @@ def push_access_request(testbot):
     testbot.push_message("access to Xxx")
     # gives some time to process
     # needed in slow environments, e.g. github actions
-    time.sleep(0.2) 
+    time.sleep(0.2)
 
 def raise_no_resource_found(message = '', match = ''):
-    raise Exception('Sorry, cannot find that resource!')
+    raise NotFoundException('Sorry, cannot find that resource!')
+
+def get_alternative_email_func(alternate_email):
+    def get_alternative_email(user_id_):
+        if alternate_email:
+            profile = {
+                'fields': {
+                    'XXX': {
+                        'value': alternative_email,
+                        'label': alternative_email_tag
+                    }
+                }
+            }
+            return profile
+        return None
+    return get_alternative_email

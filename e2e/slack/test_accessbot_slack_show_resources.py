@@ -3,12 +3,15 @@ import pytest
 import sys
 from unittest.mock import MagicMock
 
-from test_common import create_config, DummyResource
 sys.path.append('plugins/sdm')
+sys.path.append('e2e/')
+
+from test_common import create_config, DummyResource
 from lib import ShowResourcesHelper
 
 pytest_plugins = ["errbot.backends.test"]
-extra_plugin_dir = 'plugins/sdm'
+extra_plugin_dir = "plugins/sdm"
+account_name = "myaccount@test.com"
 
 class Test_show_resources:
     @pytest.fixture
@@ -21,6 +24,34 @@ class Test_show_resources:
         message = mocked_testbot.pop_message()
         assert "Aaa (type: DummyResource)" in message
         assert "Bbb (type: DummyResource)" in message
+
+class Test_show_allowed_resources:
+    @pytest.fixture
+    def mocked_testbot_allow_resource_true(self, testbot):
+        config = create_config()
+        config['ALLOW_RESOURCE_TAG'] = 'allow-resource'
+        resources = [ DummyResource("Bbb", {}), DummyResource("Aaa", {'allow-resource': True}) ]
+        return inject_mocks(testbot, config, resources)
+
+    @pytest.fixture
+    def mocked_testbot_allow_resource_false(self, testbot):
+        config = create_config()
+        config['ALLOW_RESOURCE_TAG'] = 'allow-resource'
+        resources = [ DummyResource("Bbb", {}), DummyResource("Aaa", {'allow-resource': False}) ]
+        return inject_mocks(testbot, config, resources)
+
+    def test_only_show_allowed_resources_when_allow_resource_tag_true(self, mocked_testbot_allow_resource_true):
+        mocked_testbot_allow_resource_true.push_message("show available resources")
+        message = mocked_testbot_allow_resource_true.pop_message()
+        assert "Aaa (type: DummyResource)" in message
+        assert "Bbb (type: DummyResource)" not in message
+
+    def test_dont_show_resources_when_allow_resource_tag_false(self, mocked_testbot_allow_resource_false):
+        mocked_testbot_allow_resource_false.push_message("show available resources")
+        message = mocked_testbot_allow_resource_false.pop_message()
+        assert "no available resources" in message
+        assert "Aaa (type: DummyResource)" not in message
+        assert "Bbb (type: DummyResource)" not in message
 
 class Test_not_show_hidden_resources:
     @pytest.fixture

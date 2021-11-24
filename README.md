@@ -1,12 +1,12 @@
 # AccessBot
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/strongdm/accessbot)
+![GitHub Workflow Status](https://img.shields.io/github/workflow/status/strongdm/accessbot/accessbot?label=tests)
 
 AccessBot is a chatbot that manages access to strongDM (SDM) resources, initially via Slack
 
 **Important**: This repo hosts two versions of AccessBot with the same set of funcionalities and corresponding documentation:
 * v1.0.x ([branch](https://github.com/strongdm/accessbot/tree/1.0.x)). Uses the old Slack API (RTM) - _requires a Slack Classic App_
 * v1.1.x ([main](https://github.com/strongdm/accessbot)). Uses the new Slack API (Bolt)
-
-**We've observed some problems with v1.1.x, please use v1.0.x until further notice**
 
 ## Table of Contents
 * [Installation](#installation)
@@ -16,11 +16,22 @@ AccessBot is a chatbot that manages access to strongDM (SDM) resources, initiall
 
 ## Installation
 In order to install AccessBot, you need to provide the following required variables:
-* **SLACK_APP_TOKEN**. Slack App-Level Token
-* **SLACK_BOT_TOKEN**. Slack Bot User OAuth Token
-* **SDM_ADMINS**. List of Slack admins, although it's not required, this users are usually SDM admins too  
+* **SDM_BOT_PLATFORM**. The platform that the bot will be installed on, i.e. "ms-teams", "slack" or blank (which will be interpreted as Slack by default)
+* **SDM_ADMINS**. List of admins, although it's not required, these users are usually SDM admins too 
+  - For Slack platform: use the nick handles of all the admins
+  - For MS Teams platform: use the email addresses of all the admins
 * **SDM_API_ACCESS_KEY**. SDM API Access Key
 * **SDM_API_SECRET_KEY**. SDM API Access Key Secret
+
+### Slack Installation
+For Slack platform, you need to provide the following required variables:
+* **SLACK_APP_TOKEN**. Slack App-Level Token
+* **SLACK_BOT_TOKEN**. Slack Bot User OAuth Token
+
+### MS Teams Installation
+For MS Teams platform, you need to provide the following required variables:
+* **AZURE_APP_ID**. Azure Bot application ID
+* **AZURE_APP_PASSWORD**. Azure Bot application password
 
 For a full list of configuration variables please read: [Configure AccessBot](docs/CONFIGURE_ACCESSBOT.md)
 
@@ -65,6 +76,7 @@ For example:
 1. Set `SDM_AUTO_APPROVE_ALL=true` to disable approval entirely.
 2. Use the strongDM CLI or SDK to add the following tags to individual resources:
       - `SDM_AUTO_APPROVE_TAG=auto-approve` -- automatic approval for this resource
+      - `SDM_ALLOW_RESOURCE_TAG=allow-resource` -- resource is displayed via `show` command; any access request auto-fails if the resource does not have the tag
       - `SDM_HIDE_RESOURCE_TAG=hide-resource` -- resource is not displayed via `show` command; any access request auto-fails
 
 For more information, please refer to the [detailed guide for access configuration](docs/ACCESS_CONFIGURATION.md).
@@ -77,4 +89,5 @@ A list of typical issues and resolutions can be found [here](docs/TROUBLESHOOTIN
 In case you want to contribute to the project, please check our [guidelines](CONTRIBUTING.md).
 
 ## Support
-In case you need support, please check our [Frequently Asked Questions](FAQ.md) and [support](SUPPORT.md) documents.
+In case you need support, please check our [Frequently Asked Questions](docs/FAQ.md) and [support](SUPPORT.md) documents.
+
